@@ -92,17 +92,16 @@ class Decoder(srd.Decoder):
     def get_bits(self, n, edge:'r', timeout=100e-6):
         max_period = int(timeout * self.samplerate) + 1
         for i in range(n):
-            clk, dat = self.wait([{0:edge},{'skip':max_period}])
+            _, dat = self.wait([{0:edge},{'skip':max_period}])
             if not self.matched[0]:
                 break #Timed out
             self.bits.append(Bit(dat, self.samplenum, self.samplenum+max_period))
             if i>0: #Fix the ending period
                 self.bits[i-1].es = self.samplenum
+        if len(self.bits) == n:
+            self.wait([{0:'r'},{'skip':max_period}])
+            self.bits[-1].es = self.samplenum
         self.bitcount = len(self.bits)
-
-    def putb(self, bit, ann_idx):
-        b = self.bits[bit]
-        self.put(b.ss, b.es, self.out_ann, [ann_idx, [str(b.val)]])
 
     def putx(self, bit, ann, host=False):
         if host:
@@ -110,6 +109,10 @@ class Decoder(srd.Decoder):
         self.put(self.bits[bit].ss, self.bits[bit].es, self.out_ann, ann)
 
     def handle_bits(self, host=False):
+        # Annotate individual bits
+        for b in self.bits:
+            self.put(b.ss, b.es, self.out_ann, [Ann.BIT, [str(b.val)]])
+
         # Extract data word.
         word = 0
         for i in range(min(8, self.bitcount-1)):
