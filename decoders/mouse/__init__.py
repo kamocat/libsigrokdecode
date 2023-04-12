@@ -18,11 +18,8 @@
 ##
 
 '''
-This protocol decoder can decode PS/2 device -> host communication \
-and host -> device communication.
-
-To interpret the data, please stack the appropriate keyboard or mouse \
-decoder
+This protocol decoder can decode PS/2 mouse commands.
+It should be stacked on the PS/2 packet decoder.
 '''
 
 from .pd import Decoder

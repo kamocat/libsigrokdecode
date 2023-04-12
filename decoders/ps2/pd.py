@@ -1,8 +1,6 @@
 ##
 ## This file is part of the libsigrokdecode project.
 ##
-## Copyright (C) 2016 Daniel Schulte <trilader@schroedingers-bit.net>
-##
 ## This program is free software; you can redistribute it and/or modify
 ## it under the terms of the GNU General Public License as published by
 ## the Free Software Foundation; either version 2 of the License, or
@@ -18,22 +16,33 @@
 ##
 
 import sigrokdecode as srd
-from collections import namedtuple
 
 class Ann:
-    BIT, START, STOP, PARITY_OK, PARITY_ERR, DATA, WORD = range(7)
+    BIT, START, WORD, PARITY_OK, PARITY_ERR, STOP, ACK, NACK = range(8)
 
-Bit = namedtuple('Bit', 'val ss es')
+class Bit:
+    def __init__(self, val, ss, es):
+        self.val = val
+        self.ss = ss
+        self.es = es
+
+class Ps2Packet:
+    def __init__(self, val, host=False, pok=False, ack=False):
+        self.val  = val     #byte value
+        self.host = host    #Host transmissions
+        self.pok  = pok     #Parity ok
+        self.ack  = ack     #Acknowlege ok for host transmission.
+
 
 class Decoder(srd.Decoder):
     api_version = 3
     id = 'ps2'
     name = 'PS/2'
     longname = 'PS/2'
-    desc = 'PS/2 keyboard/mouse interface.'
+    desc = 'PS/2 packet interface used by PC keyboards and mice'
     license = 'gplv2+'
     inputs = ['logic']
-    outputs = []
+    outputs = ['ps2_packet']
     tags = ['PC']
     channels = (
         {'id': 'clk', 'name': 'Clock', 'desc': 'Clock line'},
@@ -42,18 +51,27 @@ class Decoder(srd.Decoder):
     annotations = (
         ('bit', 'Bit'),
         ('start-bit', 'Start bit'),
-        ('stop-bit', 'Stop bit'),
+        ('word', 'Word'),
         ('parity-ok', 'Parity OK bit'),
         ('parity-err', 'Parity error bit'),
-        ('data-bit', 'Data bit'),
+        ('stop-bit', 'Stop bit'),
+        ('ack', 'Acknowledge'),
+        ('nack', 'Not Acknowledge'),
+        ('start-bit', 'Start bit'),
         ('word', 'Word'),
+        ('parity-ok', 'Parity OK bit'),
+        ('parity-err', 'Parity error bit'),
     )
     annotation_rows = (
         ('bits', 'Bits', (0,)),
-        ('fields', 'Fields', (1, 2, 3, 4, 5, 6)),
+        ('fields', 'Device', (1,2,3,4,5,6,7,)),
+        ('host', 'Host', (8,9,10,11,)),
     )
 
     def __init__(self):
+        if 0:
+            import rpdb2
+            rpdb2.start_embedded_debugger("pd")
         self.reset()
 
     def reset(self):
@@ -62,65 +80,86 @@ class Decoder(srd.Decoder):
 
     def start(self):
         self.out_ann = self.register(srd.OUTPUT_ANN)
+        self.out_py = self.register(srd.OUTPUT_PYTHON)
+
+    def metadata(self,key,value):
+        if key == srd.SRD_CONF_SAMPLERATE:
+            self.samplerate = value
+
+    def get_bits(self, n, edge:'r', timeout=100e-6):
+        max_period = int(timeout * self.samplerate) + 1
+        for i in range(n):
+            clk, dat = self.wait([{0:edge},{'skip':max_period}])
+            if not self.matched[0]:
+                break #Timed out
+            self.bits.append(Bit(dat, self.samplenum, self.samplenum+max_period))
+            if i>0: #Fix the ending period
+                self.bits[i-1].es = self.samplenum
+        self.bitcount = len(self.bits)
 
     def putb(self, bit, ann_idx):
         b = self.bits[bit]
         self.put(b.ss, b.es, self.out_ann, [ann_idx, [str(b.val)]])
 
-    def putx(self, bit, ann):
+    def putx(self, bit, ann, host=False):
+        if host:
+            ann[0] += 7 #host annotation offset
         self.put(self.bits[bit].ss, self.bits[bit].es, self.out_ann, ann)
 
-    def handle_bits(self, datapin):
-        # Ignore non start condition bits (useful during keyboard init).
-        if self.bitcount == 0 and datapin == 1:
-            return
-
-        # Store individual bits and their start/end samplenumbers.
-        self.bits.append(Bit(datapin, self.samplenum, self.samplenum))
-
-        # Fix up end sample numbers of the bits.
-        if self.bitcount > 0:
-            b = self.bits[self.bitcount - 1]
-            self.bits[self.bitcount - 1] = Bit(b.val, b.ss, self.samplenum)
-        if self.bitcount == 11:
-            self.bitwidth = self.bits[1].es - self.bits[2].es
-            b = self.bits[-1]
-            self.bits[-1] = Bit(b.val, b.ss, b.es + self.bitwidth)
-
-        # Find all 11 bits. Start + 8 data + odd parity + stop.
-        if self.bitcount < 11:
-            self.bitcount += 1
-            return
-
+    def handle_bits(self, host=False):
         # Extract data word.
         word = 0
-        for i in range(8):
+        for i in range(min(8, self.bitcount-1)):
             word |= (self.bits[i + 1].val << i)
 
+        packet = None
+        # Annotate start bit
+        if self.bitcount > 8:
+            self.putx(0, [Ann.START, ['Start bit', 'Start', 'S']], host)
+            self.put(self.bits[1].ss, self.bits[8].es, self.out_ann, 
+                [Ann.WORD+7 if host else Ann.WORD, 
+                ['Data: %02x' % word, 'D: %02x' % word, '%02x' % word]])
+            packet = Ps2Packet(val = word, host = host)
+
         # Calculate parity.
-        parity_ok = (bin(word).count('1') + self.bits[9].val) % 2 == 1
+        if self.bitcount > 9:
+            parity_ok = 0
+            for bit in self.bits[1:10]:
+                parity_ok ^= bit.val
+            if bool(parity_ok):
+                self.putx(9, [Ann.PARITY_OK, ['Parity OK', 'Par OK', 'P']], host)
+                packet.pok = True #Defaults to false in case packet was interrupted
+            else:
+                self.putx(9, [Ann.PARITY_ERR, ['Parity error', 'Par err', 'PE']], host)
 
-        # Emit annotations.
-        for i in range(11):
-            self.putb(i, Ann.BIT)
-        self.putx(0, [Ann.START, ['Start bit', 'Start', 'S']])
-        self.put(self.bits[1].ss, self.bits[8].es, self.out_ann, [Ann.WORD,
-                 ['Data: %02x' % word, 'D: %02x' % word, '%02x' % word]])
-        if parity_ok:
-            self.putx(9, [Ann.PARITY_OK, ['Parity OK', 'Par OK', 'P']])
-        else:
-            self.putx(9, [Ann.PARITY_ERR, ['Parity error', 'Par err', 'PE']])
-        self.putx(10, [Ann.STOP, ['Stop bit', 'Stop', 'St', 'T']])
+        # Annotate stop bit
+        if self.bitcount > 10:
+            if not host:
+                self.putx(10, [Ann.STOP, ['Stop bit', 'Stop', 'St', 'T']])
+            elif self.bits[10].val == 0:
+                self.putx(10, [Ann.ACK, ['Acknowledge', 'Ack', 'A']])
+            else:
+                self.putx(10, [Ann.NACK, ['Not Acknowledge', 'Nack', 'N']])
+            packet.ack = not bool(self.bits[10].val)
 
-        self.bits, self.bitcount = [], 0
+        if(packet):
+            self.put(self.bits[0].ss, self.bits[-1].ss, self.out_py,packet)
+        self.reset()
+
 
     def decode(self):
+        if not self.samplerate:
+            raise SamplerateError("Cannot decode without samplerate")
         while True:
-            # Sample data bits on the falling clock edge (assume the device
-            # is the transmitter). Expect the data byte transmission to end
-            # at the rising clock edge. Cope with the absence of host activity.
-            _, data_pin = self.wait({0: 'f'})
-            self.handle_bits(data_pin)
-            if self.bitcount == 1 + 8 + 1 + 1:
-                _, data_pin = self.wait({0: 'r'})
-                self.handle_bits(data_pin)
+            # Falling edge of data indicates start condition
+            clk, dat = self.wait({1: 'f'})
+            host = not bool(clk)
+            if host:
+                # Wait until the device starts clocking
+                self.wait({0:'f'})
+                # Host emits bits on rising clk edge
+                self.get_bits(11, 'r')
+            else:
+                # Client emits data on falling edge
+                self.get_bits(11, 'f')
+            self.handle_bits(host=host)
