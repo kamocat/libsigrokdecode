@@ -1,9 +1,11 @@
 #A list of scancodes for the PS2 keyboard
 ext = { 
-    0x1F:'L GUI',
+    0x1F:'L Sup',
     0x14:'R Ctrl',
-    0x27:'R GUI',
+    0x27:'R Sup',
     0x11:'R Alt',
+    0x12:['Print','Prt'],
+    0x7C:['Screen','Scr'],
     0x2F:'Menu',
     0x12:'PrtScr',
     0x7C:'SysRq',
@@ -13,12 +15,12 @@ ext = {
     0x71:'Delete',
     0x69:'End',
     0x7A:'Pg Dn',
-    0x75:'U arr',
-    0x6B:'L arr',
-    0x74:'R arr',
-    0x72:'D arr',
-    0x4A:'KP /',
-    0x5A:'KP Ent', 
+    0x75:['Up arrow','^'],
+    0x6B:['Left arrow','Left','<-'],
+    0x74:['Right arrow','Right','->'],
+    0x72:['Down arrow','Down','v'],
+    0x4A:['KP /','/'],
+    0x5A:['KP Ent','\n'], 
 }
 
 std = { 
