@@ -72,9 +72,6 @@ class Decoder(srd.Decoder):
     )
 
     def __init__(self):
-        if 0:
-            import rpdb2
-            rpdb2.start_embedded_debugger("pd")
         self.reset()
 
     def reset(self):
@@ -113,15 +110,14 @@ class Decoder(srd.Decoder):
         for b in self.bits:
             self.put(b.ss, b.es, self.out_ann, [Ann.BIT, [str(b.val)]])
 
-        # Extract data word.
-        word = 0
-        for i in range(min(8, self.bitcount-1)):
-            word |= (self.bits[i + 1].val << i)
-
         packet = None
         # Annotate start bit
         if self.bitcount > 8:
             self.putx(0, [Ann.START, ['Start bit', 'Start', 'S']], host)
+            # Annotate the data word
+            word = 0 
+            for i in range(8):
+                word |= (self.bits[i + 1].val << i)
             self.put(self.bits[1].ss, self.bits[8].es, self.out_ann, 
                 [Ann.WORD+7 if host else Ann.WORD, 
                 ['Data: %02x' % word, 'D: %02x' % word, '%02x' % word]])

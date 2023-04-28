@@ -50,9 +50,6 @@ class Decoder(srd.Decoder):
     )
 
     def __init__(self):
-        if 0:
-            import rpdb2
-            rpdb2.start_embedded_debugger("pd")
         self.reset()
 
     def reset(self):
