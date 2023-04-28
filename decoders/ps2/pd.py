@@ -64,11 +64,12 @@ class Decoder(srd.Decoder):
         ('word', 'Word'),
         ('parity-ok', 'Parity OK bit'),
         ('parity-err', 'Parity error bit'),
+        ('stop-bit', 'Stop bit'),
     )
     annotation_rows = (
         ('bits', 'Bits', (0,)),
         ('fields', 'Device', (1,2,3,4,5,6,7,)),
-        ('host', 'Host', (8,9,10,11,)),
+        ('host', 'Host', (8,9,10,11,12)),
     )
 
     def __init__(self):
@@ -136,13 +137,14 @@ class Decoder(srd.Decoder):
 
         # Annotate stop bit
         if self.bitcount > 10:
-            if not host:
-                self.putx(10, [Ann.STOP, ['Stop bit', 'Stop', 'St', 'T']])
-            elif self.bits[10].val == 0:
-                self.putx(10, [Ann.ACK, ['Acknowledge', 'Ack', 'A']])
+            self.putx(10, [Ann.STOP+7 if host  else Ann.STOP, ['Stop bit', 'Stop', 'St', 'T']])
+        # Annotate ACK
+        if host and self.bitcount > 11:
+            if self.bits[11].val == 0:
+                self.putx(11, [Ann.ACK, ['Acknowledge', 'Ack', 'A']])
             else:
-                self.putx(10, [Ann.NACK, ['Not Acknowledge', 'Nack', 'N']])
-            packet.ack = not bool(self.bits[10].val)
+                self.putx(11, [Ann.NACK, ['Not Acknowledge', 'Nack', 'N']])
+            packet.ack = not bool(self.bits[11].val)
 
         if(packet):
             self.put(self.bits[0].ss, self.bits[-1].ss, self.out_py,packet)
@@ -154,13 +156,11 @@ class Decoder(srd.Decoder):
             raise SamplerateError("Cannot decode without samplerate")
         while True:
             # Falling edge of data indicates start condition
-            clk, dat = self.wait({1: 'f'})
+            clk, dat = self.wait({1: 'l'})
             host = not bool(clk)
             if host:
-                # Wait until the device starts clocking
-                self.wait({0:'f'})
                 # Host emits bits on rising clk edge
-                self.get_bits(11, 'r')
+                self.get_bits(12, 'r')
             else:
                 # Client emits data on falling edge
                 self.get_bits(11, 'f')
