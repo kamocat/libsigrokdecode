@@ -95,27 +95,39 @@ class Decoder(srd.Decoder):
                 self.out_ann,
                 [6, [f"{n:0.1f}us Processing", f"{n:0.1f}"]],
             )
-
+            #Start bit
+            self.wait({0:'l'})
+            self.put(
+                self.samplenum - self.cp + self.ld,
+                self.samplenum + self.cp + self.ld,
+                self.out_ann,
+                [2, ["START", "ST", "S"]],
+            )
+            #CDS bit
+            ma, sl, _ = self.wait({0:'f'})
+            self.put(
+                self.samplenum - self.cp + self.ld,
+                self.samplenum + self.cp + self.ld,
+                self.out_ann,
+                [3, [f"CDS: {sl}","CDS", "C"]],
+            )
+            #Data bits
             self.bitcount = 0
+            self.data_word = 0
             while True:
-                self.bitcount += 1
                 # FIXME: Use the line delay to sample at the correct times
-                ma, sl, _ = self.wait([{0: "f"}, {"skip": 3 * self.cp + 1}])
+                ma, sl, _ = self.wait([{0: "f"}, {"skip": 4 * self.cp + 1}])
                 if self.matched[1]:
-                    self.put(
-                        self.samplenum - self.cp * 2 + self.ld,
-                        self.samplenum + self.ld,
-                        self.out_ann,
-                        [0, [f"{sl:1d}"]],
-                    )
                     break
+                self.bitcount += 1
                 self.put(
                     self.samplenum - self.cp + self.ld,
                     self.samplenum + self.cp + self.ld,
                     self.out_ann,
                     [0, [f"{sl:1d}"]],
                 )
-            self.timeout = self.samplenum + self.ld
+                self.data_word = self.data_word << 1 | sl
+            self.timeout = self.samplenum + self.ld - 2*self.cp
             self.put(
                 self.sb,
                 self.timeout,
