@@ -60,86 +60,100 @@ class Decoder(srd.Decoder):
         while True:
             self.wait({0: "r"})
             self.wait({0: "r"})  # Wait for the second rising edge
-            self.linedelay = self.samplenum
-            self.wait({1: "f"})  # Wait for ACK
-            self.ack = self.samplenum
-            self.ld = self.ack - self.linedelay
+            ld = self.samplenum
+            self.wait({1: "l"})  # Wait for ACK
+            ack = self.samplenum
+            ld = ack - ld  # line delay
+            n = ld/self.samplerate*1e9
             self.put(
-                self.linedelay,
-                self.ack,
+                ack-ld,
+                ack,
                 self.out_ann,
-                [5, [f"{self.ld/self.samplerate*1e6:0.2f}us Line Delay", "LD", "L"]],
+                [5, [f"{n:0.0f}us Line Delay", f"{n:0.0f}ns"]],
             )
-            self.clk_count = 0
+            clk_count = 0
             while True:
-                self.clk_count += 1
+                clk_count += 1
                 self.wait(
-                    [{1: "r"}, {0: "e"}]
+                    [{1: "h"}, {0: "e"}]
                 )  # Count clock edges while waiting for start bit
                 if self.matched[0]:
                     break
-            self.sb = self.samplenum
-            self.clk_half_period = (self.sb - self.ack) / self.clk_count
-            self.cp = int(self.clk_half_period)
+            sb = self.samplenum
+            clk_half_period = (sb - ack) / clk_count
+            cp = int(clk_half_period)
             self.put(
-                self.sb,
-                self.ack,
+                sb,
+                ack,
                 self.out_clockrate,
-                self.samplerate / self.clk_half_period / 2,
+                self.samplerate / clk_half_period / 2,
             )
-            self.put(self.ack, self.sb, self.out_ann, [1, ["ACK", "A"]])
-            n = (self.sb - self.ack) / self.samplerate * 1e6
+            self.put(ack, ack+2*cp, self.out_ann, [1, ["ACK", "A"]])
+            n = (sb - ack) / self.samplerate * 1e6
             self.put(
-                self.ack,
-                self.sb,
+                ack,
+                sb,
                 self.out_ann,
-                [6, [f"{n:0.1f}us Processing", f"{n:0.1f}"]],
+                [6, [f"{n:0.1f}us Setup", f"{n:0.1f}"]],
             )
-            #Start bit
-            self.wait({0:'l'})
+            # Start bit
+            self.wait(
+                {0: "l"}
+            )  # Rising clock might have been simultaneous with start bit
+
+            # Data bits
+            clock_edges = [self.samplenum]
+            data_edges = []
+            while True:
+                # FIXME: Use the line delay to sample at the correct times
+                ma, sl, _ = self.wait([{0: "r"}, {1: "e"}, {"skip": 4 * cp + 1}])
+                if self.matched[1]:  # Data changed, save the previous state
+                    data_edges.append((self.samplenum, 1-sl))
+                if self.matched[0]: #New clock edge
+                    clock_edges.append(self.samplenum + ld)
+                if self.matched[2]:  # Clock in timeout, end of data
+                    clock_edges.append(self.samplenum)
+                    break
+            i = 1
+            bits = len(clock_edges) * [0]
+            for c,v in data_edges:
+                while clock_edges[i] < c:
+                    bits[i] = v
+                    i += 1
+                if (clock_edges[i] - c) > (c - clock_edges[i-1]):
+                    i -= 1
+                clock_edges[i] = c
             self.put(
-                self.samplenum - self.cp + self.ld,
-                self.samplenum + self.cp + self.ld,
+                sb,
+                clock_edges[1],
                 self.out_ann,
                 [2, ["START", "ST", "S"]],
             )
-            #CDS bit
-            ma, sl, _ = self.wait({0:'f'})
             self.put(
-                self.samplenum - self.cp + self.ld,
-                self.samplenum + self.cp + self.ld,
+                clock_edges[1],
+                clock_edges[2],
                 self.out_ann,
-                [3, [f"CDS: {sl}","CDS", "C"]],
+                [3, [f'{bits[0]}']],
             )
-            #Data bits
-            self.bitcount = 0
-            self.data_word = 0
-            while True:
-                # FIXME: Use the line delay to sample at the correct times
-                ma, sl, _ = self.wait([{0: "f"}, {"skip": 4 * self.cp + 1}])
-                if self.matched[1]:
-                    break
-                self.bitcount += 1
-                self.put(
-                    self.samplenum - self.cp + self.ld,
-                    self.samplenum + self.cp + self.ld,
-                    self.out_ann,
-                    [0, [f"{sl:1d}"]],
-                )
-                self.data_word = self.data_word << 1 | sl
-            self.timeout = self.samplenum + self.ld - 2*self.cp
+            data_word = 0
+            bitcount = len(clock_edges)-3
+            for i in range(2, bitcount+2):
+                self.put(clock_edges[i], clock_edges[i+1], self.out_ann, [0, [f'{bits[i]}']])
+                data_word = (data_word << 1) | bits[i] 
+                
+            timeout = clock_edges[-1]
             self.put(
-                self.sb,
-                self.timeout,
+                clock_edges[2],
+                clock_edges[-1],
                 self.out_ann,
-                [10, [f"{self.bitcount:2d} bits", f"{self.bitcount:2d}"]],
+                [10, [f"{bitcount:2d} bits", f"{bitcount:2d}"]],
             )
             self.wait({0: "h", 1: "h"})
-            self.idle = self.samplenum
-            n = (self.idle - self.timeout) / self.samplerate * 1e6
+            idle = self.samplenum
+            n = (idle - timeout) / self.samplerate * 1e6
             self.put(
-                self.timeout,
-                self.idle,
+                timeout,
+                idle,
                 self.out_ann,
                 [7, [f"{n:0.1f}us Timeout", f"{n:0.1f}"]],
             )
