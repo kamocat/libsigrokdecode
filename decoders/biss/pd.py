@@ -69,6 +69,8 @@ class Decoder(srd.Decoder):
         )
         self.out_binary = self.register(srd.OUTPUT_BINARY)
         self.d_len = self.options['d_len']
+        assert self.dlen > 0, 'Data length too short'
+        assert self.dlen <= 56, 'Data length + Error + Warn + CRC must not exceed 64 bits'
 
     def reset(self):
         self.samplerate = None
@@ -158,14 +160,15 @@ class Decoder(srd.Decoder):
                 self.put(clock_edges[i], clock_edges[i+1], self.out_ann, [0, [f'{bits[i]}']])
                 data_word = (data_word << 1) | bits[i] 
             if bitcount >= self.d_len + 8:
-                self.put(clock_edges[2], clock_edges[2+self.d_len], self.out_ann, [8, [f'{data_word>>(bitcount-self.d_len):0{(self.d_len+3)//4}X}']])
+                data_word >>= bitcount-self.d_len-8 #Discard extra bits
+                self.put(clock_edges[2], clock_edges[2+self.d_len], self.out_ann, [8, [f'{data_word>>8:0{(self.d_len+3)//4}X}']])
                 if not bits[self.d_len+2]:
                     self.put(clock_edges[2+self.d_len], clock_edges[3+self.d_len], self.out_ann, [11, ['Error', 'Err', 'E']])
                 if not bits[self.d_len+3]:
                     self.put(clock_edges[3+self.d_len], clock_edges[4+self.d_len], self.out_ann, [12, ['Warning', 'Warn', 'W']])
-                expected, crc = calc_crc(data_word>>(bitcount-self.d_len-8), self.d_len+8, self.options['poly'])
+                expected, crc = calc_crc(data_word, self.d_len+8, self.options['poly'])
                 self.put(clock_edges[4+self.d_len], clock_edges[10+self.d_len], self.out_ann, [9 if expected==crc else 13, [f'{expected:02X}']])
-            self.put(clock_edges[2], clock_edges[-1], self.out_binary, [0, data_word.to_bytes(-(-bitcount//8), byteorder='big')])
+                self.put(clock_edges[2], clock_edges[-1], self.out_binary, [0, data_word.to_bytes(8, byteorder='big')])
             timeout = clock_edges[-1]
             self.put(
                 clock_edges[2],
