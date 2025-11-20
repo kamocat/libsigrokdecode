@@ -15,10 +15,9 @@ class Decoder(srd.Decoder):
         {"id": "ma", "name": "MA", "desc": "Clock"},
         {"id": "sl", "name": "SL", "desc": "Sensor data"},
     )
-    optional_channels = ({"id": "mo", "name": "MO", "desc": "Actuator data"},)
+    #optional_channels = ({"id": "mo", "name": "MO", "desc": "Actuator data"},)
     options = (
-        {"id": "d_len", "description": "data length", "default": 38},
-        {"id": "crc_len", "description": "crc length", "default": 6},
+        {"id": "d_len", "description": "data length", "default": 32},
         {"id": "crc", "description": "CRC polynomial", "default": 0x43},
     )
     annotations = (
@@ -33,11 +32,14 @@ class Decoder(srd.Decoder):
         ("data", "Data"),  # 8
         ("crc", "CRC"),  # 9
         ("bitcount", "Number of bits in message"),  # 10
+        ("nE", "Error"), #11
+        ("nW", "Warning"), #12
+        ("crc_error", "CRC Error"), #13
     )
     annotation_rows = (
         ("bits", "Bits", (0, 1, 2, 3, 4)),
         ("times", "Times", (5, 6, 7, 10)),
-        ("data", "Data", (8, 9)),
+        ("data", "Data", (8, 9, 13, 11, 12)),
     )
     
     binary = (
@@ -57,6 +59,7 @@ class Decoder(srd.Decoder):
             srd.OUTPUT_META, meta=(int, "Clockrate", "Master clock rate")
         )
         self.out_binary = self.register(srd.OUTPUT_BINARY)
+        self.d_len = self.options['d_len']
 
     def reset(self):
         self.samplerate = None
@@ -110,8 +113,7 @@ class Decoder(srd.Decoder):
             clock_edges = [self.samplenum]
             data_edges = []
             while True:
-                # FIXME: Use the line delay to sample at the correct times
-                ma, sl, _ = self.wait([{0: "r"}, {1: "e"}, {"skip": 4 * cp + 1}])
+                ma, sl = self.wait([{0: "r"}, {1: "e"}, {"skip": 4 * cp + 1}])
                 if self.matched[1]:  # Data changed, save the previous state
                     data_edges.append((self.samplenum, 1-sl))
                 if self.matched[0]: #New clock edge
@@ -121,10 +123,12 @@ class Decoder(srd.Decoder):
             i = 1
             bits = len(clock_edges) * [0]
             for c,v in data_edges:
-                while clock_edges[i] < c:
+                while i < len(clock_edges) and clock_edges[i] < c:
                     bits[i] = v
                     i += 1
-                if (clock_edges[i] - c) > (c - clock_edges[i-1]):
+                if i == len(clock_edges):
+                    clock_edges.append(c)
+                elif (clock_edges[i] - c) > (c - clock_edges[i-1]):
                     i -= 1
                 clock_edges[i] = c
             self.put(
@@ -144,7 +148,14 @@ class Decoder(srd.Decoder):
             for i in range(2, bitcount+2):
                 self.put(clock_edges[i], clock_edges[i+1], self.out_ann, [0, [f'{bits[i]}']])
                 data_word = (data_word << 1) | bits[i] 
-            self.put(clock_edges[2], clock_edges[-1], self.out_ann, [8, [f'{data_word:0{(bitcount+3)//4}X}']])
+            if bitcount >= self.d_len + 8:
+                self.put(clock_edges[2], clock_edges[2+self.d_len], self.out_ann, [8, [f'{data_word>>(bitcount-self.d_len):0{(self.d_len+3)//4}X}']])
+                if not bits[self.d_len+2]:
+                    self.put(clock_edges[2+self.d_len], clock_edges[3+self.d_len], self.out_ann, [11, ['Error', 'Err', 'E']])
+                if not bits[self.d_len+3]:
+                    self.put(clock_edges[3+self.d_len], clock_edges[4+self.d_len], self.out_ann, [12, ['Warning', 'Warn', 'W']])
+                crc = 0x3F & (data_word>>(bitcount-self.d_len-8))
+                self.put(clock_edges[4+self.d_len], clock_edges[10+self.d_len], self.out_ann, [9, [f'{crc:02X}']])
             self.put(clock_edges[2], clock_edges[-1], self.out_binary, [0, data_word.to_bytes(-(-bitcount//8), byteorder='big')])
             timeout = clock_edges[-1]
             self.put(
